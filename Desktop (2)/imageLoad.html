@@ -1,0 +1,113 @@
+﻿<!DOCTYPE html>
+<html> 
+<head> 
+	<meta http-equiv="content-type" content="text/html; charset=UTF-8"/> 
+	<title>Viewer Example</title> 
+
+	<script src="https://maps.googleapis.com/maps/api/js?v=3.exp&sensor=false" type="text/javascript"></script> 
+	<script> 
+	
+		var start_point = new google.maps.LatLng(52.551272,-117.674845);
+		var end_point = new google.maps.LatLng(52.53996000000001,-117.64528000000001);
+		var map, directions_renderer, directions_service, streetview_service, geocoder;
+		var start_pin, end_pin, pivot_pin;
+		var _elevation = 0;
+		var _route_markers = [];
+		var i = 0;
+		var path;
+		
+
+		//초기 설정
+		function init() {
+			var canvas = document.getElementById("pano");
+			var context = canvas.getContext("2d");
+			/* Map */
+			
+			//길찾기를 요청한다.
+			function snapToRoad(start,end) {
+				var request = { origin: start, destination: end, travelMode: google.maps.TravelMode.DRIVING };
+				directions_service.route(request, function(response, status) {
+					if(status == google.maps.DirectionsStatus.OK)
+						generate(response);
+					else
+						console.log(status);
+				});
+			}
+			
+			//구글 맵 옵션
+			var mapOpt = { 
+				mapTypeId: google.maps.MapTypeId.ROADMAP,
+				center: start_point,
+				zoom: 15
+			};
+
+			//맵을 만든다.
+			map = new google.maps.Map(document.getElementById("map"), mapOpt);
+			geocoder = new google.maps.Geocoder();
+
+			//스트리트 뷰가 있는 곳만 보이도록 덮어쓴다.
+			var overlay = new google.maps.StreetViewCoverageLayer();
+			overlay.setMap(map);
+
+			
+			//
+			directions_service = new google.maps.DirectionsService();
+			directions_renderer = new google.maps.DirectionsRenderer({draggable:false, markerOptions:{visible: false}});
+			directions_renderer.setMap(map);
+			directions_renderer.setOptions({preserveViewport:true});
+
+		
+			
+			
+			snapToRoad(start_point,end_point);
+			
+			var img = new Image();
+			img.onload = function(){
+				canvas.width = img.width;
+				canvas.height = img.height;
+				context.drawImage(img,0,0,img.width,img.height);
+			}
+			
+			function generate(directionResult){
+				var myRoute = directionResult.routes[0];
+				path = myRoute.overview_path;
+				console.log("generate 입장");
+			}
+			function drawNext(){
+			
+				if(i < path.length) {
+					console.log(path[i].lat());
+					console.log(path[i].lng());
+					img.src = 'http://maps.googleapis.com/maps/api/streetview?size=600x300&location='+path[i].lat()+','+path[i].lng()+'&pitch=-0.76&sensor=false';
+					console.log(img.src);
+
+					i++;
+				}
+			}
+			document.addEventListener( 'keydown', onKeyDown, false );
+			function onKeyDown ( event ) {
+				switch( event.keyCode ) {
+					case 190: /* > */
+						drawNext();
+						break;
+
+					case 188: /* < */
+						drawNext();
+						break;
+				}
+			};
+		}
+		window.onload = init;
+	
+	</script> 
+</head> 
+<body> 
+	
+	<canvas id="pano" width= "600" height= "300"></canvas>
+	
+	<div id="map" style="width: 400px; height: 300px; float: right; padding: 0;"></div>
+		
+	
+	
+</body> 
+</html>
