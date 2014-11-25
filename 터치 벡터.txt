@@ -1,0 +1,590 @@
+#include <stdlib.h>
+#include <math.h>
+
+//터치 좌표
+#define GPIO16_GPXR      0x00010000 // touch access
+#define GPIO23_GPXR      0x00800000 // touch clk
+#define GPIO24_GPXR      0x01000000 // touch frame
+#define GPIO25_GPXR      0x02000000 // touch TXD
+#define GPIO26_GPXR      0x04000000 // touch RXD
+
+#define GPIO16_GAFR0_U_MASK      0xFFFFFFFC //touch access
+#define GPIO23_GAFR0_U_MASK      0xFFFF3FFF //touch clk
+#define GPIO24_GAFR0_U_MASK      0xFFFCFFFF //touch frame
+#define GPIO25_GAFR0_U_MASK      0xFFF3FFFF //touch TXD
+#define GPIO26_GAFR0_U_MASK      0xFFCFFFFF //touch RXDF
+
+#define GPSR0   (*(volatile int *)0x40E00018)
+#define GPCR0   (*(volatile int *)0x40E00024)
+#define GPDR0   (*(volatile int *)0x40E0000C)
+#define GPLR0   (*(volatile int *)0x40E00000)
+#define GAFR0_U (*(volatile int *)0x40E00058)// GPIO Alternate Function Register (GPIO16~31)
+
+
+//   BaseFrame
+#define LCCR0                         (*(volatile unsigned long *)(0x44000000))
+#define LCCR1                         (*(volatile unsigned long *)(0x44000004))
+#define LCCR2                         (*(volatile unsigned long *)(0x44000008))
+#define LCCR3                         (*(volatile unsigned long *)(0x4400000c))
+#define FDADR0                        (*(volatile unsigned long *)(0x44000200))
+#define XRES                          800
+#define YRES                          480
+#define BPP                           16
+#define FRAME_BUFFERSIZE               XRES*YRES*BPP/8               
+#define FRAME_DESCRIPTOR               0xa2600000
+#define FRAME_BUFFER                  (FRAME_DESCRIPTOR+0x20)   
+
+
+//   OverLay1
+#define XRES_Over                     100
+#define YRES_Over                     60
+#define XPOS_Over                     10
+#define YPOS_Over                     10
+#define BPP_Over                      16
+#define FDADR1                        (*(volatile unsigned long *)(0x44000210))
+#define FRAME_BUFFERSIZE1               XRES_Over*YRES_Over*BPP_Over/8               
+#define FRAME_DESCRIPTOR1               0xa2700000      
+#define FRAME_BUFFER1                  (FRAME_DESCRIPTOR1+0x20)            
+#define OVL1C1                        (*(volatile unsigned long *)(0x44000050))
+#define OVL1C2                         (*(volatile unsigned long *)(0x44000060))
+
+#define FBR1                        (*(volatile unsigned long *)(0x44000024))
+#define FBR2                        (*(volatile unsigned long *)(0x44000028))
+
+#define pie							3.14
+//전역변수들 
+int X_POS = 0, Y_POS = 0;
+double X_D =0, Y_D = 0;
+double prev_x = 0; //이전 x좌표 값
+double prev_y = 0; //이전 y좌표 값
+unsigned char char_ASCII[256][8];
+
+
+struct pxafb_dma_descriptor {
+	unsigned int   fdadr;
+	unsigned int   fsadr;
+	unsigned int   fidr;
+	unsigned int   ldcmd;
+};
+
+volatile struct pxafb_dma_descriptor *fdadr0;
+volatile struct pxafb_dma_descriptor *fdadr1;
+
+
+void lcd_init(void)
+{
+
+	fdadr0 = (void *)FRAME_DESCRIPTOR;
+	fdadr1 = (void *)FRAME_DESCRIPTOR1;
+
+
+	fdadr0->fdadr = FRAME_DESCRIPTOR;
+	fdadr0->fsadr = FRAME_BUFFER;
+	fdadr0->fidr = 0;
+	fdadr0->ldcmd = FRAME_BUFFERSIZE;
+
+	fdadr1->fdadr = FRAME_DESCRIPTOR1;
+	fdadr1->fsadr = FRAME_BUFFER1;
+	fdadr1->fidr = 0;
+	fdadr1->ldcmd = FRAME_BUFFERSIZE1;
+
+
+	LCCR0 = 0x023008f8 | (1<<26);
+	LCCR1 = 0x1313ec00 | 799;
+	LCCR2 = 0x00004c00 | 479;
+	LCCR3 = 0x00400001 | (4 << 24) | (3 << 30);
+
+	OVL1C2 = (YPOS_Over - 1 << 10) | XPOS_Over - 1;
+	OVL1C1 = (1 << 31) | (4 << 20) | (YRES_Over - 1 << 10) | XRES_Over - 1;
+
+	FDADR0 = FRAME_DESCRIPTOR;
+	FDADR1 = FRAME_DESCRIPTOR1;
+
+	LCCR0 |= 1;
+}
+
+void Put_PixelOverLay1(unsigned int x, unsigned int y, unsigned short color)
+{
+	unsigned short *fb = (void *)FRAME_BUFFER1;
+	unsigned int ofs;
+
+	ofs = y * XRES_Over;
+
+	fb[ofs + x] = color;
+}
+
+void Clear_OverLay1(unsigned short color)
+{
+	unsigned short *fb = (void *)FRAME_BUFFER1;
+	int i;
+
+	for (i = 0; i < YRES_Over * XRES_Over; i++)
+		fb[i] = color;
+}
+
+
+
+void Put_PixelBaseFrame(unsigned int x, unsigned int y, unsigned short color)
+{
+	unsigned short *fb = (void *)FRAME_BUFFER;
+	unsigned int ofs;
+
+	ofs = y * XRES;
+
+	fb[ofs + x] = color;
+}
+
+void Clear_BaseFrame(unsigned short color)
+{
+	unsigned short *fb = (void *)FRAME_BUFFER;
+	int i, j;
+
+	memset(fb, color, YRES*XRES * 2);
+}
+
+void DrawCircle(int x, int y, int r, unsigned short color)
+{
+	int i, j;
+
+	for (i = x; i< x + r * 2; i++)
+	{
+		for (j = y; j<y + r * 2; j++)
+		{
+			if ((i - r - x)*(i - r - x) + (j - r - y)*(j - r - y) <= r*r)
+			{
+				Put_PixelBaseFrame(i, j, (unsigned int)color);
+			}
+		}
+	}
+}
+
+void DrawCircle1(int x, int y, int r, unsigned short color)
+{
+	int i, j;
+
+	for (i = x; i< x + r * 2; i++)
+	{
+		for (j = y; j<y + r * 2; j++)
+		{
+			if ((i - r - x)*(i - r - x) + (j - r - y)*(j - r - y) <= r*r)
+			{
+				Put_PixelOverLay1(i, j, (unsigned int)color);
+			}
+		}
+	}
+}
+
+// 두 점 사이의 직선의 방정식
+void put_line(int x1, int y1, int x2, int y2, unsigned short color)
+{
+	unsigned int x, y, temp = 0;
+	double a = 0;//기울기가 소수로 나오기도 하므로...
+
+	//for문이 x1~x2 방향 이므로, 더 클시 바꿔치기한다.
+	if (x1>x2)
+	{
+		temp = x1;
+		x1 = x2;
+		x2 = temp;
+
+		temp = y1;
+		y1 = y2;
+		y2 = temp;
+	}
+
+	a = (double)(y2 - y1) / (double)(x2 - x1);//두 점을 잇는 직선의 기울기
+
+	if (x2 == x1)
+	{
+		for (y = y1; y<y2; y++)
+		{
+			Put_PixelBaseFrame(x1, y, color);
+		}
+		return;
+	}
+	else if (y2 == y1)
+	{;
+		for (x = x1; x<x2; x++)
+		{
+			Put_PixelBaseFrame(x, y1, color);
+		}
+		return;
+
+	}
+	for (x = x1; x<x2; x++)//x1~x2                             
+	{
+		y = a*(x - x1) + y1;//직선방정식
+		Put_PixelBaseFrame(x, y, color);
+	}
+}
+
+// 두 점 사이의 직선의 방정식
+void put_line2(int x1, int y1, int x2, int y2, unsigned short color)
+{
+	unsigned int x, y, temp = 0;
+	double a = 0;//기울기가 소수로 나오기도 하므로...
+
+	//for문이 x1~x2 방향 이므로, 더 클시 바꿔치기한다.
+	if (x1>x2)
+	{
+		temp = x1;
+		x1 = x2;
+		x2 = temp;
+
+		temp = y1;
+		y1 = y2;
+		y2 = temp;
+	}
+
+	a = (double)(y2 - y1) / (double)(x2 - x1);//두 점을 잇는 직선의 기울기
+
+	if (x2 == x1)
+	{
+		for (y = y1; y<y2; y++)
+		{
+			Put_PixelOverLay1(x1, y, color);
+		}
+		return;
+	}
+	else if (y2 == y1)
+	{;
+		for (x = x1; x<x2; x++)
+		{
+			Put_PixelOverLay1(x, y1, color);
+		}
+		return;
+
+	}
+	for (x = x1; x<x2; x++)//x1~x2                             
+	{
+		y = a*(x - x1) + y1;//직선방정식
+		Put_PixelOverLay1(x, y, color);
+	}
+}
+//크기 가능 문자
+void MyPutCharR(int x, int y, char c, unsigned short color)
+{
+	unsigned int font;
+	int row, col, i = 0;
+
+
+	for (row = y; row<y + 8; row++)
+	{
+		font = char_ASCII[c][i++];
+		for (col = x + 8; col>x; col--)
+		{
+			if (font & 1)
+			{
+				Put_PixelOverLay1(col, row, color);
+			}
+			font = font >> 1;
+		}
+	}
+}
+//Touch
+void Touch_init()
+{
+	GPSR0 |= (GPIO16_GPXR | GPIO24_GPXR | GPIO25_GPXR);
+	GPCR0 |= (GPIO23_GPXR | GPIO26_GPXR);
+	GPDR0 |= (GPIO23_GPXR | GPIO24_GPXR | GPIO25_GPXR);
+	GPDR0 &= ~(GPIO16_GPXR | GPIO26_GPXR);
+	GAFR0_U &= (GPIO16_GAFR0_U_MASK & GPIO23_GAFR0_U_MASK & GPIO24_GAFR0_U_MASK & GPIO25_GAFR0_U_MASK & GPIO26_GAFR0_U_MASK);   
+	return ;
+}
+
+char Touch_check()
+{//Touch 유무 검사
+	if( !( GPLR0 & GPIO16_GPXR ) )//touch access
+		return 1;
+	else
+		return 0;
+}
+
+void DelayTime(int n)
+{
+	volatile int touchtimecount = 0;
+	for(touchtimecount = 0; touchtimecount < n; touchtimecount++){}
+	return ;
+}
+
+void dleay_ms(int n)
+{
+	volatile int timecount = 0;
+	for(timecount = 0; timecount < 6500*n; timecount++){}
+	return;
+}
+
+void CLK()
+{
+	DelayTime(4);
+	GPSR0 |= GPIO23_GPXR; // CLK- GO HIGH "1"
+	DelayTime(4);
+	GPCR0 |= GPIO23_GPXR;// CLK- GO LOW "0"
+
+}
+
+void Touch_TX(char data)
+{//ADS7846으로 데이터를 보냄
+	int i = 0;
+	char x_data[8] = {1,1,0,1,0,0,0,1}; //테이블 참조
+	char y_data[8] = {1,0,0,1,0,0,0,1};
+
+	GPCR0 |= GPIO24_GPXR;
+
+	if(data == 'x')
+	{
+		for(i=0;i<8;i++)
+		{
+			if(x_data[i] == 1)
+			{
+				DelayTime(4);
+				GPSR0 |= GPIO25_GPXR; 
+				CLK();
+
+			}
+			else if(x_data[i] == 0)
+			{
+				DelayTime(4);
+				GPCR0 |= GPIO25_GPXR;
+				CLK();
+
+			}
+		}
+	}
+	else if(data == 'y')
+	{
+		for(i=0;i<8;i++)
+		{
+			if(y_data[i] == 1)
+			{
+				DelayTime(4);
+				GPSR0 |= GPIO25_GPXR;
+				CLK();            
+
+			}
+			else if(y_data[i] == 0)
+			{
+				DelayTime(4);
+				GPCR0 |= GPIO25_GPXR;
+				CLK();
+			}
+		}
+	}
+}
+
+void Touch_RX(char data)
+{// ADS7846에서 좌표값 읽어 들이기
+	int i,j,k;
+	int x_data[12] = {0, }; 
+	int y_data[12] = {0, };
+
+	DelayTime(10);
+	CLK(); 
+	DelayTime(10);
+
+	if(data == 'x')
+	{
+		for(i = 0;i<12;i++)
+		{
+			GPSR0 |= GPIO23_GPXR; 
+			DelayTime(40);
+
+			if((GPLR0 & GPIO26_GPXR) == GPIO26_GPXR)
+			{
+				x_data[i] = 1;
+			}
+			else
+			{
+				x_data[i] = 0;
+			}
+			GPCR0 |= GPIO23_GPXR; 
+			DelayTime(4);
+		}
+		GPSR0 |= GPIO24_GPXR;
+		DelayTime(100);
+
+		X_POS = 2048*x_data[0]+1024*x_data[1]+512*x_data[2]+256*x_data[3]+128*x_data[4]
+		+64*x_data[5]+32*x_data[6]+16*x_data[7]+8*x_data[8]+4*x_data[9]+2*x_data[10]
+		+x_data[11]; 
+
+		//X_POS = 4095-X_POS;   
+	}
+
+	else if(data == 'y')
+	{
+		for(i = 0;i<12;i++)
+		{
+			GPSR0 |= GPIO23_GPXR;
+			DelayTime(40);
+
+			((GPLR0 & GPIO26_GPXR) == GPIO26_GPXR) ? (y_data[i] = 1) : (y_data[i] = 0);
+
+			GPCR0 |= GPIO23_GPXR;
+			DelayTime(4);
+		}
+		GPSR0 |= GPIO24_GPXR;
+		DelayTime(100);
+
+		Y_POS = 2048*y_data[0]+1024*y_data[1]+512*y_data[2]+256*y_data[3]+128*y_data[4]
+		+64*y_data[5]+32*y_data[6]+16*y_data[7]+8*y_data[8]+4*y_data[9]+2*y_data[10]
+		+y_data[11]; 
+
+	}
+}
+
+void getTouchValue()
+{//   터치값을 받아오는 함수 
+	X_POS = 0;
+	Y_POS = 0;
+
+	GPCR0 |= GPIO23_GPXR;
+
+	DelayTime(4);
+
+	Touch_TX('x');
+	Touch_RX('x');
+	Touch_TX('y');
+	Touch_RX('y');
+}
+
+char gestureNumber(int x1, int y1, int x2, int y2)
+{
+	double theta;
+	double a;
+	
+	if( x1 == x2 )
+	{
+		if( y2 > y1 )
+			return '0';
+		else
+			return '4';
+	}
+	if( y1 == y2 )
+	{
+		if( x2 > x1 )
+			return '2';
+		else
+			return '6';
+	}
+	
+	a = -(double)(y2-y1)/(double)(x2-x1);
+	
+	theta = atan(a)*180/pie;
+	
+	if (x2 > x1)//1사분면, 4사분면
+	{
+		if (y1 < y2)
+			theta += 360;
+	}
+	else if (x1 > x2)//2사분면 3사분면
+	{
+		theta += 180;
+	}
+	
+	if( 22.5 <= theta && theta < 67.5 )
+		return '1';
+	else if( 67.5 <= theta && theta < 112.5 )
+		return '0';
+	else if( 112.5 <= theta && theta < 157.5 )
+		return '7';
+	else if( 157.5 <= theta && theta < 202.5 )
+		return '6';
+	else if( 202.5 <= theta && theta < 247.5 )
+		return '5';
+	else if( 247.5 <= theta && theta < 292.5 )
+		return '4';
+	else if( 292.5 <= theta && theta < 337.5 )
+		return '3';
+	else if( 337.5 <= theta && theta < 360 )
+		return '2';
+	else if( 0 <= theta && theta < 22.5 )
+		return '2';
+	
+	return '9';
+}
+
+void Touch_app2()
+{
+	int TouchFlag = 0;
+	int TouchCount = 0;
+	int good_X;
+	int good_Y;
+	int start_X;
+	int start_Y;
+	while(1)
+	{
+		while(!Touch_check())
+		{
+		}
+		while(Touch_check())
+		{
+			getTouchValue();
+			// 좌표 변경
+			X_D = (4095 - X_POS)/5.11875;
+			Y_D = (Y_POS)/8.53125;
+			
+			//첫 터치 시
+			if(TouchFlag==0)
+			{
+				prev_x = X_D;
+				prev_y = Y_D;
+				start_X = X_D;
+				start_Y = Y_D;
+			}
+			else
+			{
+				if(!(abs((int)(prev_x - X_D)) >10)
+					 && !(abs((int)(prev_y - Y_D)) > 10))
+				{
+					DrawCircle((int)(prev_x + X_D)/2,(int)(prev_y + Y_D)/2,2, 0x0000);
+					good_X = (int)(prev_x + X_D)/2;
+					good_Y = (int)(prev_y + Y_D)/2;
+				}
+				prev_x = X_D;
+				prev_y = Y_D;
+			}
+			TouchFlag=1;
+		}
+		Clear_OverLay1(0x0000);
+		MyPutCharR(10,10, gestureNumber(start_X/8,start_Y/8,good_X/8,good_Y/8),0xF800);
+		put_line2(start_X/8,start_Y/8,good_X/8,good_Y/8,0xffff);
+		TouchFlag = 0;
+	}
+}
+
+
+int main(void)
+{
+	unsigned char char_0[8] = { 0x3c, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x3c };
+	unsigned char char_1[8] = { 0x08, 0x18, 0x38, 0x08, 0x08, 0x08, 0x08, 0x7e };
+	unsigned char char_2[8] = { 0x7e, 0x02, 0x02, 0x7e, 0x40, 0x40, 0x40, 0x7e };
+	unsigned char char_3[8] = { 0x7e, 0x02, 0x02, 0x7e, 0x02, 0x02, 0x02, 0x7e };
+	unsigned char char_4[8] = { 0x18, 0x28, 0x48, 0x88, 0xff, 0x08, 0x08, 0x08 };
+	unsigned char char_5[8] = { 0x7e, 0x40, 0x40, 0x7e, 0x02, 0x02, 0x02, 0x7e };
+	unsigned char char_6[8] = { 0x7e, 0x40, 0x40, 0x7e, 0x42, 0x42, 0x42, 0x7e };
+	unsigned char char_7[8] = { 0x7e, 0x42, 0x42, 0x4e, 0x02, 0x02, 0x02, 0x02 };
+	unsigned char char_8[8] = { 0x3c, 0x42, 0x42, 0x3c, 0x42, 0x42, 0x42, 0x3c };
+	unsigned char char_9[8] = { 0x3c, 0x42, 0x42, 0x42, 0x3e, 0x02, 0x02, 0x02 };
+	memcpy(char_ASCII['0'], char_0, 8);
+	memcpy(char_ASCII['1'], char_1, 8);
+	memcpy(char_ASCII['2'], char_2, 8);
+	memcpy(char_ASCII['3'], char_3, 8);
+	memcpy(char_ASCII['4'], char_4, 8);
+	memcpy(char_ASCII['5'], char_5, 8);
+	memcpy(char_ASCII['6'], char_6, 8);
+	memcpy(char_ASCII['7'], char_7, 8);
+	memcpy(char_ASCII['8'], char_8, 8);
+	memcpy(char_ASCII['9'], char_9, 8);
+	
+	vinit();
+	GPIO_init();
+	Touch_init();
+	lcd_init();
+	
+	Clear_BaseFrame(0xffff);
+	Clear_OverLay1(0x0000);
+	DrawCircle(400, 240, 4, 0x0000);
+	
+	Touch_app2();
+	return 0;
+}
